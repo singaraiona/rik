@@ -1,6 +1,4 @@
 #![allow(deprecated)]
-#![feature(buf_stream)]
-#![feature(convert)]
 
 // TODO: endian issues
 //         byteorder (0.3.11)

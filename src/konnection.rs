@@ -1,13 +1,14 @@
-use std::io::{self, BufStream};
+use std::io::{self, BufReader, BufWriter};
 use std::io::prelude::*;
 use std::mem;
 use std::net::*;
 use std::result::Result;
-
+use std::os::unix::io::{IntoRawFd, FromRawFd};
 
 #[derive(Debug)]
 pub struct Konnection {
-    stream: BufStream<TcpStream>,
+    rx: BufReader<TcpStream>,
+    tx: BufWriter<TcpStream>,
     pub buf: Vec<u8>,
     hp: String,
     cred: String,
@@ -44,7 +45,7 @@ fn struct_to_bytes_mut<T>(s: &mut T) -> &mut [u8] {
     }
 }
 
-fn read_all(r: &mut BufStream<TcpStream>, buf: &mut [u8]) {
+fn read_all(r: &mut BufReader<TcpStream>, buf: &mut [u8]) {
     let len = buf.len();
     let mut n = 0;
     while n < len {
@@ -62,18 +63,23 @@ impl Konnection {
         let cred = format!("{}:{}", name, passwd);
         let msg = format!("{}\x01\x00", cred);
 
-        let mut konn = Konnection { stream: BufStream::new(sock),
+        let sockfd = sock.into_raw_fd();
+        let rx = unsafe { BufReader::new(TcpStream::from_raw_fd(sockfd)) };
+        let tx = unsafe { BufWriter::new(TcpStream::from_raw_fd(sockfd)) };
+
+        let mut konn = Konnection { rx: rx,
+                                    tx: tx,
                                     buf: Vec::with_capacity(0),
                                     hp: hp,
                                     cred: cred,
                                     ver: 0,
         };
 
-        konn.stream.write(msg.as_bytes()).unwrap();
-        konn.stream.flush().unwrap();
+        konn.tx.write(msg.as_bytes()).unwrap();
+        konn.tx.flush().unwrap();
 
         let mut resp = [0u8];
-        let rd = konn.stream.read(&mut resp).unwrap();
+        let rd = konn.rx.read(&mut resp).unwrap();
         assert!(rd == 1);
 
         konn.ver = resp[0];
@@ -89,22 +95,22 @@ impl Konnection {
         let mhdr = KMessageHeader { endian:1, msg_type:1, compress:0, unused:0, size:size };
         let vhdr = KVectorHeader { val_type:10, attrib:0, len:q.len() as i32 };
 
-        self.stream.write_all(struct_to_bytes(&mhdr)).unwrap();
-        self.stream.write_all(struct_to_bytes(&vhdr)).unwrap();
-        self.stream.write_all(q.as_bytes()).unwrap();
-        self.stream.flush().unwrap();
+        self.tx.write_all(struct_to_bytes(&mhdr)).unwrap();
+        self.tx.write_all(struct_to_bytes(&vhdr)).unwrap();
+        self.tx.write_all(q.as_bytes()).unwrap();
+        self.tx.flush().unwrap();
 
         size
     }
 
     pub fn read_message(&mut self) -> &[u8] {
         let mut mhdr: KMessageHeader = unsafe { mem::uninitialized() };
-        read_all(&mut self.stream, struct_to_bytes_mut(&mut mhdr));
+        read_all(&mut self.rx, struct_to_bytes_mut(&mut mhdr));
         let payload_size = mhdr.size as usize - mem::size_of::<KMessageHeader>();
         unsafe {
             self.buf.reserve(payload_size);
             self.buf.set_len(payload_size);
-            read_all(&mut self.stream, self.buf.as_mut_slice());
+            read_all(&mut self.rx, self.buf.as_mut_slice());
         }
         self.buf.as_slice()
     }
